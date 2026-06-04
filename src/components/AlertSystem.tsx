@@ -7,7 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Bell, Plus, Trash2, AlertTriangle, TrendingUp, BarChart3, Volume2, VolumeX, CheckCircle } from "lucide-react";
-import { useAlertEngine, playAlertSound, type AlertCondition, type AlertTone } from "@/hooks/useAlertEngine";
+import { useAlertEngine, type AlertCondition, type AlertTone } from "@/hooks/useAlertEngine";
+import { notifyUserAlert, playAlertSound } from "@/lib/alertNotify";
+import { useAlertNotifyPrefs } from "@/hooks/useAlertNotifyPrefs";
 import { useAllIndices } from "@/hooks/useMarketData";
 import { useWebSocketVix } from "@/hooks/useWebSocket";
 import { toast } from "sonner";
@@ -36,7 +38,7 @@ interface AlertSystemProps {
 export function AlertSystem({ open, onOpenChange }: AlertSystemProps) {
   const [alerts, setAlerts] = useState<AlertCondition[]>([]);
 
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  const { prefs, setSound } = useAlertNotifyPrefs();
   const [showAdd, setShowAdd] = useState(false);
 
   // Live data from hooks
@@ -59,13 +61,16 @@ export function AlertSystem({ open, onOpenChange }: AlertSystemProps) {
   };
 
   const handleTriggered = useCallback((alert: AlertCondition) => {
-    toast.warning(
-      `🔔 ${alert.symbol} ${typeLabels[alert.type]} ${alert.condition} ${alert.value}`,
-      { duration: 8000, description: `Alert triggered at ${new Date().toLocaleTimeString("en-IN")}` }
-    );
-  }, []);
+    notifyUserAlert({
+      title: `🔔 ${alert.symbol} ${typeLabels[alert.type]} ${alert.condition} ${alert.value}`,
+      body: `Triggered at ${new Date().toLocaleTimeString("en-IN")}`,
+      tone: alert.tone,
+      tag: alert.id,
+      sound: prefs.sound,
+    });
+  }, [prefs.sound]);
 
-  useAlertEngine(alerts, alertData, handleTriggered, soundEnabled);
+  useAlertEngine(alerts, alertData, handleTriggered, false);
 
   const addAlert = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -112,10 +117,11 @@ export function AlertSystem({ open, onOpenChange }: AlertSystemProps) {
                 Test 🔊
               </button>
               <button
-                onClick={() => setSoundEnabled(!soundEnabled)}
+                onClick={() => setSound(!prefs.sound)}
                 className="p-1 rounded hover:bg-accent transition-colors"
+                title={prefs.sound ? "Alert sound on" : "Alert sound off"}
               >
-                {soundEnabled ? <Volume2 className="h-4 w-4 text-bullish" /> : <VolumeX className="h-4 w-4 text-muted-foreground" />}
+                {prefs.sound ? <Volume2 className="h-4 w-4 text-bullish" /> : <VolumeX className="h-4 w-4 text-muted-foreground" />}
               </button>
             </div>
           </SheetTitle>

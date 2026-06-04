@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
+import { notifyUserAlert, requestBrowserNotifyPermission } from "@/lib/alertNotify";
 import { buildIndexOptionInsight } from "@/lib/indexOptionInsights";
 import {
   INDEX_MOVE_ALERT_SYMBOLS,
@@ -50,7 +50,6 @@ export function useIndexSuddenMoveMonitor(
   options: {
     enabled?: boolean;
     thresholds?: SuddenMoveThresholds;
-    notifyBrowser?: boolean;
     notifyToast?: boolean;
     cooldownMs?: number;
   } = {},
@@ -58,7 +57,6 @@ export function useIndexSuddenMoveMonitor(
   const {
     enabled = true,
     thresholds = DEFAULT_MOVE_THRESHOLDS,
-    notifyBrowser = false,
     notifyToast = true,
     cooldownMs = COOLDOWN_MS,
   } = options;
@@ -98,21 +96,15 @@ export function useIndexSuddenMoveMonitor(
         return next;
       });
 
-      if (notifyToast) {
-        toast.warning(alert.headline, {
-          duration: 12_000,
-          description: alert.trade.primary,
-        });
-      }
-
-      if (notifyBrowser && typeof Notification !== "undefined" && Notification.permission === "granted") {
-        new Notification(alert.headline, {
-          body: `${alert.trade.primary} — ${alert.trade.rationale}`,
-          tag: alert.id,
-        });
-      }
+      notifyUserAlert({
+        title: alert.headline,
+        body: `${alert.trade.primary} — ${alert.trade.rationale}`,
+        tone: alert.expectedDirection === "up" ? "bullish" : "bearish",
+        tag: alert.id,
+        toast: notifyToast,
+      });
     },
-    [cooldownMs, notifyBrowser, notifyToast],
+    [cooldownMs, notifyToast],
   );
 
   useEffect(() => {
@@ -158,20 +150,12 @@ export function useIndexSuddenMoveMonitor(
     localStorage.removeItem(HISTORY_KEY);
   }, []);
 
-  const requestNotificationPermission = useCallback(async () => {
-    if (typeof Notification === "undefined") return "unsupported" as const;
-    if (Notification.permission === "granted") return "granted" as const;
-    if (Notification.permission === "denied") return "denied" as const;
-    const result = await Notification.requestPermission();
-    return result;
-  }, []);
-
   return {
     history,
     activeAlerts,
     lastCheckAt,
     clearHistory,
-    requestNotificationPermission,
+    requestNotificationPermission: requestBrowserNotifyPermission,
     samples: samplesRef.current,
   };
 }

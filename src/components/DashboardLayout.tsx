@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Badge } from "@/components/ui/badge";
 import { isSpotSourceDebugEnabled, startProxySpotMetricsPolling } from "@/lib/spotSourceDebug";
+import { unlockAlertAudio } from "@/lib/alertNotify";
 
 export default function DashboardLayout() {
   const navigate = useNavigate();
@@ -46,6 +47,16 @@ export default function DashboardLayout() {
     onToggleSearch: () => setSearchOpen(true),
     onToggleAlerts: () => setAlertsOpen(true),
   });
+
+  useEffect(() => {
+    const unlock = () => unlockAlertAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isSpotSourceDebugEnabled()) return;

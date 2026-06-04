@@ -10,6 +10,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   Bell,
   BellRing,
+  Volume2,
   ExternalLink,
   Loader2,
   Radar,
@@ -23,6 +24,7 @@ import { useLiveIndices, useLiveOptionChain } from "@/hooks/useMarketData";
 import { useMoveAlertSmallcapIndices } from "@/hooks/useMoveAlertSmallcapIndices";
 import { useMoveAlertIndexRealtime } from "@/hooks/useMoveAlertIndexRealtime";
 import { useIndexSuddenMoveMonitor } from "@/hooks/useIndexSuddenMoveMonitor";
+import { useAlertNotifyPrefs } from "@/hooks/useAlertNotifyPrefs";
 import { marketWS } from "@/lib/websocketClient";
 import {
   INDEX_ONLY_MOVE_SYMBOLS,
@@ -110,8 +112,8 @@ function AlertCard({
 export default function IndexMoveAlerts() {
   const navigate = useNavigate();
   const [monitorOn, setMonitorOn] = useState(true);
-  const [browserNotify, setBrowserNotify] = useState(false);
   const [sensitivity, setSensitivity] = useState(100);
+  const { prefs, setSound, setBrowser, requestPermission } = useAlertNotifyPrefs();
 
   useEffect(() => {
     marketWS.connect();
@@ -173,13 +175,11 @@ export default function IndexMoveAlerts() {
     [niftyQuery.data, bankQuery.data],
   );
 
-  const { activeAlerts, history, lastCheckAt, clearHistory, requestNotificationPermission } =
-    useIndexSuddenMoveMonitor(spots, chains, {
-      enabled: monitorOn,
-      thresholds,
-      notifyBrowser: browserNotify,
-      notifyToast: true,
-    });
+  const { activeAlerts, history, lastCheckAt, clearHistory } = useIndexSuddenMoveMonitor(spots, chains, {
+    enabled: monitorOn,
+    thresholds,
+    notifyToast: true,
+  });
 
   const hasAnySpot = spots.some((s) => s.spotPrice > 0);
   const loading = !hasAnySpot && (indicesLoading || smallcapLoading);
@@ -214,17 +214,24 @@ export default function IndexMoveAlerts() {
             <Label htmlFor="mon">Active monitoring</Label>
           </div>
           <div className="flex items-center gap-2">
+            <Switch id="sound" checked={prefs.sound} onCheckedChange={setSound} />
+            <Label htmlFor="sound" className="flex items-center gap-1">
+              <Volume2 className="h-3.5 w-3.5" />
+              Alert sound
+            </Label>
+          </div>
+          <div className="flex items-center gap-2">
             <Switch
               id="bnotify"
-              checked={browserNotify}
+              checked={prefs.browser}
               onCheckedChange={async (v) => {
-                setBrowserNotify(v);
-                if (v) await requestNotificationPermission();
+                await setBrowser(v);
+                if (v) await requestPermission();
               }}
             />
             <Label htmlFor="bnotify" className="flex items-center gap-1">
               <BellRing className="h-3.5 w-3.5" />
-              Browser alerts
+              Background notify
             </Label>
           </div>
           <div className="min-w-[220px] flex-1 space-y-1">
@@ -245,9 +252,10 @@ export default function IndexMoveAlerts() {
         <Bell className="h-4 w-4" />
         <AlertTitle>How it works</AlertTitle>
         <AlertDescription className="text-xs leading-relaxed">
-          Alerts fire when spot moves more than the threshold in 15s–3m. Nifty/Bank Nifty use ATM CE/PE ideas with
-          OI when the chain is loaded. Smallcap indices are index-only (NSE spot, no listed options) — ideas use
-          ETFs / cash framing. Not financial advice — verify before trading.
+          Alerts fire when spot moves more than the threshold in 15s–3m. With <strong>Background notify</strong> on,
+          allow browser notifications (OS toast + tab title flash when this tab is in the background). Click anywhere
+          in the app once so <strong>Alert sound</strong> can play. Nifty/Bank Nifty use ATM CE/PE ideas with OI when
+          the chain is loaded. Not financial advice.
         </AlertDescription>
       </Alert>
 

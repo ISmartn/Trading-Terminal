@@ -1,50 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
+import { playAlertSound, type AlertTone } from "@/lib/alertNotify";
 
-// Audio context for alert sounds
-let audioContext: AudioContext | null = null;
-
-function getAudioContext(): AudioContext {
-  if (!audioContext) {
-    audioContext = new AudioContext();
-  }
-  return audioContext;
-}
-
-export type AlertTone = "bullish" | "bearish" | "warning" | "info";
-
-const toneFrequencies: Record<AlertTone, number[]> = {
-  bullish: [523.25, 659.25, 783.99],  // C5, E5, G5 — ascending major chord
-  bearish: [783.99, 659.25, 523.25],  // descending
-  warning: [880, 880, 880],            // A5 repeated
-  info: [659.25, 783.99],             // E5, G5
-};
-
-export function playAlertSound(tone: AlertTone = "info", volume: number = 0.3) {
-  try {
-    const ctx = getAudioContext();
-    if (ctx.state === "suspended") ctx.resume();
-
-    const freqs = toneFrequencies[tone];
-    const noteLength = 0.12;
-
-    freqs.forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.type = tone === "warning" ? "square" : "sine";
-      osc.frequency.value = freq;
-      gain.gain.value = volume;
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + (i + 1) * noteLength + 0.05);
-
-      osc.start(ctx.currentTime + i * noteLength);
-      osc.stop(ctx.currentTime + (i + 1) * noteLength + 0.05);
-    });
-  } catch (e) {
-    console.warn("Audio playback failed:", e);
-  }
-}
+export type { AlertTone } from "@/lib/alertNotify";
+export { playAlertSound } from "@/lib/alertNotify";
 
 export interface AlertCondition {
   id: string;
@@ -71,7 +29,7 @@ export function checkAlerts(
   data: AlertCheckData
 ): AlertCondition[] {
   const now = Date.now();
-  const cooldown = 60000; // 1 minute cooldown between re-triggers
+  const cooldown = 60000;
 
   return alerts.map(alert => {
     if (!alert.active || (alert.triggered && alert.triggeredAt && now - alert.triggeredAt < cooldown)) {
@@ -97,7 +55,6 @@ export function checkAlerts(
       return { ...alert, triggered: true, triggeredAt: now };
     }
 
-    // Reset if condition no longer met
     if (!shouldTrigger && alert.triggered) {
       return { ...alert, triggered: false, triggeredAt: undefined };
     }
@@ -106,35 +63,31 @@ export function checkAlerts(
   });
 }
 
-// Hook that runs alert checks on an interval
 export function useAlertEngine(
   alerts: AlertCondition[],
   data: AlertCheckData,
   onTriggered: (alert: AlertCondition) => void,
-  enabled: boolean = true,
+  soundEnabled: boolean = true,
 ) {
   const prevTriggered = useRef<Set<string>>(new Set());
 
   const check = useCallback(() => {
-    if (!enabled) return;
-
     const updated = checkAlerts(alerts, data);
     updated.forEach(alert => {
       if (alert.triggered && !prevTriggered.current.has(alert.id)) {
         prevTriggered.current.add(alert.id);
         onTriggered(alert);
-        playAlertSound(alert.tone);
+        if (soundEnabled) playAlertSound(alert.tone);
       }
       if (!alert.triggered && prevTriggered.current.has(alert.id)) {
         prevTriggered.current.delete(alert.id);
       }
     });
-  }, [alerts, data, onTriggered, enabled]);
+  }, [alerts, data, onTriggered, soundEnabled]);
 
   useEffect(() => {
-    if (!enabled) return;
-    const interval = setInterval(check, 5000); // Check every 5 seconds
-    check(); // Immediate check
+    const interval = setInterval(check, 5000);
+    check();
     return () => clearInterval(interval);
-  }, [check, enabled]);
+  }, [check]);
 }

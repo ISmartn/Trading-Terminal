@@ -12,6 +12,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Bell,
+  BellRing,
+  Volume2,
   ExternalLink,
   Loader2,
   Radar,
@@ -24,6 +26,7 @@ import {
 } from "lucide-react";
 import { SectionHeader } from "@/components/dashboard/SectionHeader";
 import { useSmallcapStockAlerts } from "@/hooks/useSmallcapStockAlerts";
+import { useAlertNotifyPrefs } from "@/hooks/useAlertNotifyPrefs";
 import { getProxyPortLabel } from "@/lib/proxyConfig";
 import { DEFAULT_STOCK_POLL_MOVE_PCT, type SmallcapStockAlert } from "@/lib/smallcapStockAlerts";
 import {
@@ -153,6 +156,7 @@ export default function SmallcapStockAlerts() {
   const [search, setSearch] = useState("");
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [alertTab, setAlertTab] = useState<"live" | "history">("live");
+  const { prefs, setSound, setBrowser, requestPermission } = useAlertNotifyPrefs();
 
   const minMovePct = DEFAULT_STOCK_POLL_MOVE_PCT * (sensitivity / 100);
 
@@ -273,6 +277,27 @@ export default function SmallcapStockAlerts() {
               <Switch id="sc-mon" checked={monitorOn} onCheckedChange={setMonitorOn} />
               <Label htmlFor="sc-mon" className="text-xs">
                 Monitor
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch id="sc-sound" checked={prefs.sound} onCheckedChange={setSound} />
+              <Label htmlFor="sc-sound" className="flex items-center gap-1 text-xs">
+                <Volume2 className="h-3 w-3" />
+                Sound
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="sc-bg"
+                checked={prefs.browser}
+                onCheckedChange={async (v) => {
+                  await setBrowser(v);
+                  if (v) await requestPermission();
+                }}
+              />
+              <Label htmlFor="sc-bg" className="flex items-center gap-1 text-xs">
+                <BellRing className="h-3 w-3" />
+                Background
               </Label>
             </div>
             <div className="min-w-[160px] flex-1 space-y-1">

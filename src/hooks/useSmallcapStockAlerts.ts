@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { toast } from "sonner";
+import { notifyUserAlert } from "@/lib/alertNotify";
 import { INDEX_MOVE_SMALLCAP_POLL_MS } from "@/lib/dataRefreshPolicy";
 import {
   alertCooldownKey,
@@ -84,9 +84,13 @@ export function useSmallcapStockAlerts(options: {
           return next;
         });
 
-        if (notifyToast) {
-          toast.warning(alert.headline, { duration: 10_000, description: alert.tradeHint });
-        }
+        notifyUserAlert({
+          title: alert.headline,
+          body: alert.tradeHint,
+          tone: alert.direction === "up" ? "bullish" : "bearish",
+          tag: alert.id,
+          toast: notifyToast,
+        });
       }
     },
     [notifyToast],
