@@ -1,0 +1,17 @@
+{
+  "name": "Trading Terminal",
+  "short_name": "Terminal",
+  "description": "NSE F&O analytics and move alerts",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0d14",
+  "theme_color": "#0a0d14",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -4,5 +4,6 @@ redis>=5.0.0
 upstox-python-sdk>=2.21.0
 websocket-client>=1.6.0
 numpy>=1.24.0
+pywebpush>=1.14.0
 # Optional: install TA-Lib C library first — https://ta-lib.org/install/
 TA-Lib>=0.4.28

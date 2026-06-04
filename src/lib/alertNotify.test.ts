@@ -6,12 +6,12 @@ describe("alertNotify prefs", () => {
     localStorage.clear();
   });
 
-  it("defaults sound and browser on", () => {
-    expect(loadAlertNotifyPrefs()).toEqual({ sound: true, browser: true });
+  it("defaults sound and browser on, mobile push off", () => {
+    expect(loadAlertNotifyPrefs()).toEqual({ sound: true, browser: true, mobilePush: false });
   });
 
   it("persists partial updates", () => {
-    saveAlertNotifyPrefs({ sound: false });
-    expect(loadAlertNotifyPrefs()).toEqual({ sound: false, browser: true });
+    saveAlertNotifyPrefs({ sound: false, mobilePush: true });
+    expect(loadAlertNotifyPrefs()).toEqual({ sound: false, browser: true, mobilePush: true });
   });
 });

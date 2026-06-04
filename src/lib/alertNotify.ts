@@ -13,9 +13,11 @@ const TITLE_FLASH_INTERVAL_MS = 900;
 export interface AlertNotifyPrefs {
   sound: boolean;
   browser: boolean;
+  /** Web Push — alerts when the app tab is closed (phone must subscribe once). */
+  mobilePush: boolean;
 }
 
-const DEFAULT_PREFS: AlertNotifyPrefs = { sound: true, browser: true };
+const DEFAULT_PREFS: AlertNotifyPrefs = { sound: true, browser: true, mobilePush: false };
 
 export function loadAlertNotifyPrefs(): AlertNotifyPrefs {
   try {
@@ -25,6 +27,7 @@ export function loadAlertNotifyPrefs(): AlertNotifyPrefs {
     return {
       sound: parsed.sound !== false,
       browser: parsed.browser !== false,
+      mobilePush: parsed.mobilePush === true,
     };
   } catch {
     return { ...DEFAULT_PREFS };

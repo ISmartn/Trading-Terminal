@@ -13,6 +13,7 @@ from aiohttp import web
 
 from . import alert_pipeline, cache, feed, fno_intelligence, handlers, live_scanner_feed, upstox_sdk
 from .alert_pipeline import routes as alert_routes
+from . import index_move_push_monitor, push_routes
 from .config import (
     CORS_HEADERS,
     NSE_CONNECT_TIMEOUT_SEC,
@@ -309,10 +310,12 @@ async def on_startup(app: web.Application) -> None:
         asyncio.create_task(fno_intelligence.maybe_schedule_eod_playbook(app["http_session"], token))
 
     alert_pipeline.start_workers()
+    index_move_push_monitor.start(app["http_session"])
     print(f"  ✅ Proxy ready — http://localhost:{PORT}")
 
 
 async def on_cleanup(app: web.Application) -> None:
+    index_move_push_monitor.stop()
     await alert_pipeline.stop_workers()
     feed.stop_upstox_feed()
     live_scanner_feed.stop_live_scanner()
@@ -341,6 +344,10 @@ def create_app() -> web.Application:
     app.router.add_get("/health", health_handler)
     app.router.add_post("/api/market-webhook", alert_routes.market_webhook_handler)
     app.router.add_get("/api/alert-pipeline/status", alert_routes.alert_pipeline_status_handler)
+    app.router.add_get("/api/push/status", push_routes.push_status_handler)
+    app.router.add_post("/api/push/subscribe", push_routes.push_subscribe_handler)
+    app.router.add_post("/api/push/unsubscribe", push_routes.push_unsubscribe_handler)
+    app.router.add_post("/api/push/test", push_routes.push_test_handler)
     app.router.add_get("/ws", feed.websocket_handler)
 
     app.on_startup.append(on_startup)

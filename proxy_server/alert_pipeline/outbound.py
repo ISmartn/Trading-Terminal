@@ -10,7 +10,23 @@ from .models import OutboundAlert
 _last_alert_by_asset: dict[str, int] = {}
 
 
+def _push_mobile(alert: OutboundAlert) -> None:
+    try:
+        from .. import web_push
+
+        web_push.broadcast_push(
+            title=f"{alert.ticker} anomaly",
+            body=str(alert.action),
+            tag=f"pipeline:{alert.ticker}",
+            url="/index-move-alerts",
+        )
+    except Exception:
+        pass
+
+
 async def dispatch_alert(session: aiohttp.ClientSession, alert: OutboundAlert) -> bool:
+    _push_mobile(alert)
+
     if not ALERT_OUTBOUND_WEBHOOK_URL:
         print(
             f"  📣 Alert (dry-run): {alert.ticker} {alert.action} "
