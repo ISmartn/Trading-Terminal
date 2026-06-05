@@ -10,15 +10,20 @@ import aiohttp
 
 from . import upstox_sdk
 from . import cache
-from .config import EQUITY_INSTRUMENT_KEYS, FNO_STOCKS, get_access_token
-from .live_scanner import POPULAR_SCAN_SYMBOLS, engine
+from .config import EQUITY_INSTRUMENT_KEYS, get_access_token
+from .fno_scan_universe import get_fno_scan_stocks, refresh_fno_scan_stocks
+from .live_scanner import engine
 
 _scanner_task: asyncio.Task | None = None
 _access_token: str | None = None
-_universe: str = "popular"
-_batch_size = 40
+_universe: str = "all"
+# V3 LTP accepts up to 500 instruments/request; we poll the whole universe each
+# cycle (in parallel chunks) so every symbol updates every poll — essential for
+# second-level momentum detection.
+_chunk_size = 150
 _poll_interval_s = 2.0
 _equity_keys_cache: dict[str, str] = {}
+_seeding_task: asyncio.Task | None = None
 
 
 async def _resolve_equity_keys(session: aiohttp.ClientSession) -> dict[str, str]:
@@ -37,9 +42,22 @@ async def _resolve_equity_keys(session: aiohttp.ClientSession) -> dict[str, str]
 
 
 def _symbols_for_universe(universe: str) -> list[str]:
-    if universe == "all":
-        return list(FNO_STOCKS)
-    return list(POPULAR_SCAN_SYMBOLS)
+    return get_fno_scan_stocks(universe)
+
+
+async def _seed_all_volume_baselines(session: aiohttp.ClientSession, token: str, symbols: list[str]) -> None:
+    """Background: seed 20-min volume averages for the full F&O universe."""
+    chunk = 25
+    for i in range(0, len(symbols), chunk):
+        await seed_volume_baselines(session, token, symbols[i : i + chunk])
+        await asyncio.sleep(0.2)
+
+
+def _maybe_start_volume_seeding(session: aiohttp.ClientSession, token: str, symbols: list[str]) -> None:
+    global _seeding_task
+    if _seeding_task and not _seeding_task.done():
+        return
+    _seeding_task = asyncio.create_task(_seed_all_volume_baselines(session, token, symbols))
 
 
 async def seed_volume_baselines(session: aiohttp.ClientSession, token: str, symbols: list[str]) -> None:
@@ -81,33 +99,37 @@ async def _poll_batch(session: aiohttp.ClientSession, token: str, symbols: list[
     try:
         result = await upstox_sdk.get_ltp(token, instrument_keys)
     except RuntimeError:
-        engine.set_meta(running=False, last_poll_ms=int(time.time() * 1000), symbols_polled=0)
         return 0
 
     quotes = result.get("data") or {}
+    if isinstance(quotes, list):
+        quotes = {
+            q.get("instrument_token") or q.get("instrument_key"): q
+            for q in quotes
+            if isinstance(q, dict)
+        }
     now_ms = int(time.time() * 1000)
     updated = 0
 
+    # Match by request instrument_key first, then fall back to the
+    # instrument_token carried inside each quote (V3 keys can differ).
     key_to_sym = {k: s for s, k in pairs}
-    for instrument_key, quote in quotes.items():
-        sym = key_to_sym.get(instrument_key)
-        if not sym or quote.get("last_price") is None:
+    for resp_key, quote in quotes.items():
+        if not isinstance(quote, dict) or quote.get("last_price") is None:
+            continue
+        inst = quote.get("instrument_token") or resp_key
+        sym = key_to_sym.get(resp_key) or key_to_sym.get(inst)
+        if not sym:
             continue
         ltp = float(quote["last_price"])
         cum_vol = float(quote.get("volume") or 0)
-        engine.update_quote(sym, instrument_key, ltp, cum_vol, now_ms)
+        engine.update_quote(sym, inst, ltp, cum_vol, now_ms)
         updated += 1
 
-    engine.set_meta(running=True, last_poll_ms=now_ms, symbols_polled=updated)
     return updated
 
 
-_batch_offset = 0
-
-
 async def _scanner_loop(session: aiohttp.ClientSession) -> None:
-    global _batch_offset
-
     token = _access_token or get_access_token()
     if not token:
         await asyncio.sleep(5)
@@ -118,15 +140,16 @@ async def _scanner_loop(session: aiohttp.ClientSession) -> None:
         await asyncio.sleep(_poll_interval_s)
         return
 
-    if _batch_offset == 0 and engine.status().get("pollCount", 0) == 0:
-        asyncio.create_task(seed_volume_baselines(session, token, symbols[: min(len(symbols), 50)]))
+    if engine.status().get("pollCount", 0) == 0:
+        _maybe_start_volume_seeding(session, token, symbols)
 
-    start = _batch_offset
-    end = min(start + _batch_size, len(symbols))
-    batch = symbols[start:end]
-    _batch_offset = 0 if end >= len(symbols) else end
-
-    await _poll_batch(session, token, batch)
+    chunks = [symbols[i : i + _chunk_size] for i in range(0, len(symbols), _chunk_size)]
+    results = await asyncio.gather(
+        *(_poll_batch(session, token, chunk) for chunk in chunks),
+        return_exceptions=True,
+    )
+    updated = sum(r for r in results if isinstance(r, int))
+    engine.set_meta(running=True, last_poll_ms=int(time.time() * 1000), symbols_polled=updated)
     await asyncio.sleep(_poll_interval_s)
 
 
@@ -141,12 +164,11 @@ async def _loop_wrapper(session: aiohttp.ClientSession) -> None:
             await asyncio.sleep(_poll_interval_s)
 
 
-def start_live_scanner(session: aiohttp.ClientSession, access_token: str | None, universe: str = "popular") -> None:
-    global _scanner_task, _access_token, _universe, _batch_offset
+def start_live_scanner(session: aiohttp.ClientSession, access_token: str | None, universe: str = "all") -> None:
+    global _scanner_task, _access_token, _universe
 
     _access_token = access_token or get_access_token()
     _universe = universe
-    _batch_offset = 0
 
     if not _access_token:
         print("  ⚠️ Live momentum scanner skipped — no Upstox token")
@@ -155,7 +177,11 @@ def start_live_scanner(session: aiohttp.ClientSession, access_token: str | None,
     if _scanner_task and not _scanner_task.done():
         _scanner_task.cancel()
 
-    print(f"  📡 Starting live momentum scanner ({universe}, batch={_batch_size})...")
+    symbols = get_fno_scan_stocks(universe)
+    print(
+        f"  📡 Starting live momentum scanner ({universe}, {len(symbols)} symbols, "
+        f"full-universe poll every {_poll_interval_s:.0f}s, chunk={_chunk_size})..."
+    )
     _scanner_task = asyncio.create_task(_loop_wrapper(session))
 
 
@@ -167,26 +193,22 @@ def stop_live_scanner() -> None:
 
 
 def get_scanner_response(params: dict[str, str]) -> dict[str, Any]:
-    from .live_scanner import DEFAULT_MOVE_15S_PCT, DEFAULT_MOVE_1M_PCT, DEFAULT_VOLUME_SPIKE_MULT
+    from .fno_intelligence import _scan_config_from_params
 
-    universe = params.get("universe") or "popular"
-    move_15s = float(params.get("move15s") or DEFAULT_MOVE_15S_PCT)
-    move_1m = float(params.get("move1m") or DEFAULT_MOVE_1M_PCT)
-    vol_mult = float(params.get("volumeMult") or DEFAULT_VOLUME_SPIKE_MULT)
+    universe = params.get("universe") or "all"
+    cfg = _scan_config_from_params(params)
 
-    cache_key = f"live-scanner:{universe}:{move_15s}:{move_1m}:{vol_mult}"
+    cache_key = (
+        f"live-scanner:{universe}:{cfg.fast_secs}:{cfg.slow_secs}:{cfg.move_fast_pct}:"
+        f"{cfg.move_slow_pct}:{cfg.volume_mult}:{cfg.require_volume}:{cfg.require_vwap}"
+    )
     cached = cache.get_cached(cache_key)
     if cached:
         return cached
 
     symbols = _symbols_for_universe(universe)
 
-    rows = engine.scan(
-        move_15s_pct=move_15s,
-        move_1m_pct=move_1m,
-        volume_mult=vol_mult,
-        symbols=symbols,
-    )
+    rows = engine.scan(cfg, symbols=symbols)
 
     result = {
         "rows": rows,
@@ -194,9 +216,13 @@ def get_scanner_response(params: dict[str, str]) -> dict[str, Any]:
         "universe": universe,
         "universeSize": len(symbols),
         "thresholds": {
-            "move15sPct": move_15s,
-            "move1mPct": move_1m,
-            "volumeMult": vol_mult,
+            "fastSecs": cfg.fast_secs,
+            "slowSecs": cfg.slow_secs,
+            "move15sPct": cfg.move_fast_pct,
+            "move1mPct": cfg.move_slow_pct,
+            "volumeMult": cfg.volume_mult,
+            "requireVolume": cfg.require_volume,
+            "requireVwap": cfg.require_vwap,
             "volumeAvgBars": 20,
         },
         "status": engine.status(),
@@ -204,6 +230,16 @@ def get_scanner_response(params: dict[str, str]) -> dict[str, Any]:
     }
     cache.set_cache(cache_key, result, 2000)
     return result
+
+
+async def bootstrap_fno_scanner(session: aiohttp.ClientSession, token: str | None) -> None:
+    """Load full F&O stock list from Upstox, then start live polling."""
+    global _equity_keys_cache
+    _equity_keys_cache = {}
+    stocks = await refresh_fno_scan_stocks(session)
+    print(f"  📋 F&O scanner universe: {len(stocks)} stocks (Upstox instrument master)")
+    if token:
+        start_live_scanner(session, token, "all")
 
 
 def ensure_scanner_universe(session: aiohttp.ClientSession, universe: str = "all") -> None:

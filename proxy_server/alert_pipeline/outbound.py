@@ -14,9 +14,19 @@ def _push_mobile(alert: OutboundAlert) -> None:
     try:
         from .. import web_push
 
+        meta = alert.metadata or {}
+        vol = float(meta.get("volume") or 0)
+        vol_base = alert.volume_baseline or 0
+        vol_line = ""
+        if vol > 0 and vol_base > 0:
+            mult = round(vol / vol_base, 2)
+            vol_line = f" · Vol {vol:,.0f} ({mult}× SMA)"
+        elif vol > 0:
+            vol_line = f" · Vol {vol:,.0f}"
+        pts = round(float(meta.get("close", alert.entry_price)) - float(meta.get("open", alert.entry_price)), 2)
         web_push.broadcast_push(
-            title=f"{alert.ticker} anomaly",
-            body=str(alert.action),
+            title=f"{alert.ticker} anomaly ({pts:+.2f} pts)",
+            body=f"{alert.action}{vol_line}",
             tag=f"pipeline:{alert.ticker}",
             url="/index-move-alerts",
         )

@@ -86,7 +86,7 @@ export function useSmallcapStockAlerts(options: {
 
         notifyUserAlert({
           title: alert.headline,
-          body: alert.tradeHint,
+          body: alert.notifyBody,
           tone: alert.direction === "up" ? "bullish" : "bearish",
           tag: alert.id,
           toast: notifyToast,

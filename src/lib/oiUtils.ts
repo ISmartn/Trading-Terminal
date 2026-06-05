@@ -251,10 +251,19 @@ export interface OiSnapshotMetrics {
   totalPEOI: number;
   totalCEOIChange: number;
   totalPEOIChange: number;
+  totalCEVol: number;
+  totalPEVol: number;
+  totalFnoVolume: number;
+  priorTotalFnoVolume: number | null;
+  fnoVolMultiple: number | null;
+  pcrVolume: number;
   snapshotAt: number;
 }
 
-const priorOiByKey = new Map<string, { pcrOI: number; totalCEOI: number; totalPEOI: number; at: number }>();
+const priorOiByKey = new Map<
+  string,
+  { pcrOI: number; totalCEOI: number; totalPEOI: number; totalFnoVol: number; at: number }
+>();
 
 /** Compare current chain to previous snapshot (PCR velocity, aggregate ΔOI). */
 export function computeOiSnapshotMetrics(
@@ -266,6 +275,13 @@ export function computeOiSnapshotMetrics(
   const totalPEOIChange = chain.reduce((s, o) => s + o.pe.oiChange, 0);
   const prior = priorOiByKey.get(cacheKey);
   const snapshotAt = Date.now();
+  const totalFnoVolume = pcr.totalCEVol + pcr.totalPEVol;
+  const priorVol = prior?.totalFnoVol ?? null;
+  const fnoVolMultiple =
+    priorVol != null && priorVol > 0
+      ? Math.round((totalFnoVolume / priorVol) * 100) / 100
+      : null;
+
   const metrics: OiSnapshotMetrics = {
     pcrOI: pcr.pcrOI,
     priorPcrOI: prior?.pcrOI ?? null,
@@ -274,12 +290,19 @@ export function computeOiSnapshotMetrics(
     totalPEOI: pcr.totalPEOI,
     totalCEOIChange,
     totalPEOIChange,
+    totalCEVol: pcr.totalCEVol,
+    totalPEVol: pcr.totalPEVol,
+    totalFnoVolume,
+    priorTotalFnoVolume: priorVol,
+    fnoVolMultiple,
+    pcrVolume: pcr.pcrVolume,
     snapshotAt,
   };
   priorOiByKey.set(cacheKey, {
     pcrOI: pcr.pcrOI,
     totalCEOI: pcr.totalCEOI,
     totalPEOI: pcr.totalPEOI,
+    totalFnoVol: totalFnoVolume,
     at: snapshotAt,
   });
   return metrics;

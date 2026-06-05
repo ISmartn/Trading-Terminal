@@ -73,6 +73,11 @@ function AlertCard({
           </div>
           <div className="flex gap-1">
             {confidenceBadge(alert.confidence)}
+            {alert.volumeSummary && (
+              <Badge variant={alert.volumeConfirmed ? "default" : "outline"} className="text-2xs max-w-[200px] truncate">
+                {alert.volumeConfirmed ? "Vol ✓" : "Vol weak"}
+              </Badge>
+            )}
             {alert.indexOnly ? (
               <Badge variant="secondary">Index only</Badge>
             ) : (
@@ -229,10 +234,9 @@ export default function IndexMoveAlerts() {
         <Bell className="h-4 w-4" />
         <AlertTitle>How it works</AlertTitle>
         <AlertDescription className="text-xs leading-relaxed">
-          Alerts fire when spot moves more than the threshold in 15s–3m. <strong>Mobile push</strong> uses the server to
-          send OS notifications even when the browser is closed (enable once, allow notifications, add VAPID keys on
-          proxy). <strong>Tab background</strong> helps when another tab is active. Click the app once for sound.
-          Not financial advice.
+          Alerts need a <strong>price spike</strong> (shown as % and <strong>points</strong>) plus, for Nifty/Bank Nifty,
+          <strong>F&O volume</strong> vs the prior chain snapshot (PCR-V in the headline). Smallcap index benchmarks are
+          spot-only. <strong>Mobile push</strong> / <strong>Tab background</strong> need one-time setup. Not financial advice.
         </AlertDescription>
       </Alert>
 

@@ -30,6 +30,7 @@ describe("buildSuddenMoveAlert", () => {
     const move = {
       window: "30s" as const,
       movePct: 0.25,
+      movePoints: 60,
       direction: "up" as const,
       fromPrice: 24000,
       toPrice: 24060,
@@ -45,6 +46,7 @@ describe("buildSuddenMoveAlert", () => {
     const move = {
       window: "60s" as const,
       movePct: -0.35,
+      movePoints: -63,
       direction: "down" as const,
       fromPrice: 18000,
       toPrice: 17937,

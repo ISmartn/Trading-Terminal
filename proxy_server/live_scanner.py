@@ -10,11 +10,33 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-# Default thresholds (query-param overridable)
-DEFAULT_MOVE_15S_PCT = 0.4
-DEFAULT_MOVE_1M_PCT = 0.8
-DEFAULT_VOLUME_SPIKE_MULT = 3.0
+# Default thresholds (query-param / UI overridable)
+DEFAULT_FAST_SECS = 15
+DEFAULT_SLOW_SECS = 60
+DEFAULT_MOVE_FAST_PCT = 0.3
+DEFAULT_MOVE_SLOW_PCT = 0.6
+DEFAULT_VOLUME_SPIKE_MULT = 2.0
 DEFAULT_VOLUME_AVG_BARS = 20
+DEFAULT_REQUIRE_VOLUME = False
+DEFAULT_REQUIRE_VWAP = True
+
+# Backwards-compatible aliases (older callers / params)
+DEFAULT_MOVE_15S_PCT = DEFAULT_MOVE_FAST_PCT
+DEFAULT_MOVE_1M_PCT = DEFAULT_MOVE_SLOW_PCT
+
+
+@dataclass
+class ScanConfig:
+    """Tunable scan parameters — captures market nuance in seconds + minutes."""
+
+    fast_secs: int = DEFAULT_FAST_SECS
+    slow_secs: int = DEFAULT_SLOW_SECS
+    move_fast_pct: float = DEFAULT_MOVE_FAST_PCT
+    move_slow_pct: float = DEFAULT_MOVE_SLOW_PCT
+    volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT
+    require_volume: bool = DEFAULT_REQUIRE_VOLUME
+    require_vwap: bool = DEFAULT_REQUIRE_VWAP
+    min_avg_bars: int = 5
 
 POPULAR_SCAN_SYMBOLS = [
     "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "BHARTIARTL", "ITC",
@@ -113,51 +135,44 @@ class SymbolLiveState:
             return self.session_vwap_num / self.session_vwap_den
         return None
 
-    def metrics(
-        self,
-        *,
-        move_15s_pct: float = DEFAULT_MOVE_15S_PCT,
-        move_1m_pct: float = DEFAULT_MOVE_1M_PCT,
-        volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT,
-        min_avg_bars: int = 5,
-    ) -> dict[str, Any] | None:
+    def metrics(self, cfg: ScanConfig) -> dict[str, Any] | None:
         if self.last_ltp <= 0 or self.last_ts_ms <= 0:
             return None
 
         ts = self.last_ts_ms
         ltp = self.last_ltp
-        p15 = _price_at(self.price_samples, ts, 15_000)
-        p1m = _price_at(self.price_samples, ts, 60_000)
-        chg_15s = _pct_change(p15, ltp)
-        chg_1m = _pct_change(p1m, ltp)
+        p_fast = _price_at(self.price_samples, ts, cfg.fast_secs * 1000)
+        p_slow = _price_at(self.price_samples, ts, cfg.slow_secs * 1000)
+        chg_fast = _pct_change(p_fast, ltp)
+        chg_slow = _pct_change(p_slow, ltp)
         vwap = self.session_vwap()
         avg_min_vol = (
             sum(self.minute_volumes) / len(self.minute_volumes)
-            if len(self.minute_volumes) >= min_avg_bars
+            if len(self.minute_volumes) >= cfg.min_avg_bars
             else None
         )
-        vol_spike = (
-            avg_min_vol is not None
-            and self.current_minute_vol > volume_mult * avg_min_vol
-        )
+        have_volume = avg_min_vol is not None and avg_min_vol > 0
+        vol_ratio = (self.current_minute_vol / avg_min_vol) if have_volume else None
+        vol_spike = have_volume and self.current_minute_vol > cfg.volume_mult * avg_min_vol
         return {
             "symbol": self.symbol,
             "ltp": round(ltp, 2),
-            "move15sPct": round(chg_15s, 3) if chg_15s is not None else None,
-            "move1mPct": round(chg_1m, 3) if chg_1m is not None else None,
+            "move15sPct": round(chg_fast, 3) if chg_fast is not None else None,
+            "move1mPct": round(chg_slow, 3) if chg_slow is not None else None,
             "volume1m": int(self.current_minute_vol),
             "avgVolume20m": int(avg_min_vol) if avg_min_vol else None,
-            "volumeRatio": round(self.current_minute_vol / avg_min_vol, 2) if avg_min_vol else None,
+            "volumeRatio": round(vol_ratio, 2) if vol_ratio is not None else None,
+            "haveVolume": have_volume,
             "vwap": round(vwap, 2) if vwap else None,
             "aboveVwap": vwap is not None and ltp > vwap,
             "belowVwap": vwap is not None and ltp < vwap,
             "volSpike": vol_spike,
             "timestamp": ts,
             "checks": {
-                "move15sLong": chg_15s is not None and chg_15s >= move_15s_pct,
-                "move1mLong": chg_1m is not None and chg_1m >= move_1m_pct,
-                "move15sShort": chg_15s is not None and chg_15s <= -move_15s_pct,
-                "move1mShort": chg_1m is not None and chg_1m <= -move_1m_pct,
+                "move15sLong": chg_fast is not None and chg_fast >= cfg.move_fast_pct,
+                "move1mLong": chg_slow is not None and chg_slow >= cfg.move_slow_pct,
+                "move15sShort": chg_fast is not None and chg_fast <= -cfg.move_fast_pct,
+                "move1mShort": chg_slow is not None and chg_slow <= -cfg.move_slow_pct,
                 "volumeSpike": vol_spike,
                 "aboveVwap": vwap is not None and ltp > vwap,
                 "belowVwap": vwap is not None and ltp < vwap,
@@ -167,103 +182,11 @@ class SymbolLiveState:
     def _score(self, checks: dict[str, bool], keys: list[str]) -> int:
         return sum(1 for k in keys if checks.get(k))
 
-    def evaluate(
-        self,
-        *,
-        move_15s_pct: float = DEFAULT_MOVE_15S_PCT,
-        move_1m_pct: float = DEFAULT_MOVE_1M_PCT,
-        volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT,
-        min_avg_bars: int = 5,
-    ) -> dict[str, Any] | None:
-        m = self.metrics(
-            move_15s_pct=move_15s_pct,
-            move_1m_pct=move_1m_pct,
-            volume_mult=volume_mult,
-            min_avg_bars=min_avg_bars,
-        )
-        if not m or not m["checks"]["move15sLong"] or not m["checks"]["move1mLong"]:
-            return None
-        if not (m["checks"]["volumeSpike"] and m["checks"]["aboveVwap"]):
-            return None
-        return {
-            "symbol": m["symbol"],
-            "direction": "long",
-            "strength": "signal",
-            "score": 4,
-            "ltp": m["ltp"],
-            "move15sPct": m["move15sPct"],
-            "move1mPct": m["move1mPct"],
-            "volume1m": m["volume1m"],
-            "avgVolume20m": m["avgVolume20m"],
-            "volumeRatio": m["volumeRatio"],
-            "vwap": m["vwap"],
-            "aboveVwap": m["aboveVwap"],
-            "timestamp": m["timestamp"],
-        }
-
-    def evaluate_short(
-        self,
-        *,
-        move_15s_pct: float = DEFAULT_MOVE_15S_PCT,
-        move_1m_pct: float = DEFAULT_MOVE_1M_PCT,
-        volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT,
-        min_avg_bars: int = 5,
-    ) -> dict[str, Any] | None:
-        m = self.metrics(
-            move_15s_pct=move_15s_pct,
-            move_1m_pct=move_1m_pct,
-            volume_mult=volume_mult,
-            min_avg_bars=min_avg_bars,
-        )
-        if not m or not m["checks"]["move15sShort"] or not m["checks"]["move1mShort"]:
-            return None
-        if not (m["checks"]["volumeSpike"] and m["checks"]["belowVwap"]):
-            return None
-        return {
-            "symbol": m["symbol"],
-            "direction": "short",
-            "strength": "signal",
-            "score": 4,
-            "ltp": m["ltp"],
-            "move15sPct": m["move15sPct"],
-            "move1mPct": m["move1mPct"],
-            "volume1m": m["volume1m"],
-            "avgVolume20m": m["avgVolume20m"],
-            "volumeRatio": m["volumeRatio"],
-            "vwap": m["vwap"],
-            "belowVwap": m["belowVwap"],
-            "timestamp": m["timestamp"],
-        }
-
-    def evaluate_watch(
-        self,
-        direction: str,
-        *,
-        move_15s_pct: float = DEFAULT_MOVE_15S_PCT,
-        move_1m_pct: float = DEFAULT_MOVE_1M_PCT,
-        volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT,
-        min_avg_bars: int = 5,
-    ) -> dict[str, Any] | None:
-        m = self.metrics(
-            move_15s_pct=move_15s_pct,
-            move_1m_pct=move_1m_pct,
-            volume_mult=volume_mult,
-            min_avg_bars=min_avg_bars,
-        )
-        if not m:
-            return None
-        checks = m["checks"]
-        if direction == "long":
-            keys = ["move15sLong", "move1mLong", "volumeSpike", "aboveVwap"]
-        else:
-            keys = ["move15sShort", "move1mShort", "volumeSpike", "belowVwap"]
-        score = self._score(checks, keys)
-        if score < 2 or score >= 4:
-            return None
+    def _row(self, m: dict[str, Any], direction: str, strength: str, score: int) -> dict[str, Any]:
         return {
             "symbol": m["symbol"],
             "direction": direction,
-            "strength": "watch",
+            "strength": strength,
             "score": score,
             "ltp": m["ltp"],
             "move15sPct": m["move15sPct"],
@@ -271,10 +194,70 @@ class SymbolLiveState:
             "volume1m": m["volume1m"],
             "avgVolume20m": m["avgVolume20m"],
             "volumeRatio": m["volumeRatio"],
+            "volSpike": m["volSpike"],
             "vwap": m["vwap"],
-            "checks": {k: checks[k] for k in keys},
+            "aboveVwap": m["aboveVwap"],
+            "belowVwap": m["belowVwap"],
             "timestamp": m["timestamp"],
         }
+
+    def _signal_keys(self, direction: str, cfg: ScanConfig) -> list[str]:
+        """Active criteria for a full signal, honouring optional gates."""
+        if direction == "long":
+            keys = ["move15sLong", "move1mLong"]
+            if cfg.require_volume:
+                keys.append("volumeSpike")
+            if cfg.require_vwap:
+                keys.append("aboveVwap")
+        else:
+            keys = ["move15sShort", "move1mShort"]
+            if cfg.require_volume:
+                keys.append("volumeSpike")
+            if cfg.require_vwap:
+                keys.append("belowVwap")
+        return keys
+
+    def evaluate(self, cfg: ScanConfig) -> dict[str, Any] | None:
+        m = self.metrics(cfg)
+        if not m:
+            return None
+        keys = self._signal_keys("long", cfg)
+        if not all(m["checks"][k] for k in keys):
+            return None
+        return self._row(m, "long", "signal", len(keys))
+
+    def evaluate_short(self, cfg: ScanConfig) -> dict[str, Any] | None:
+        m = self.metrics(cfg)
+        if not m:
+            return None
+        keys = self._signal_keys("short", cfg)
+        if not all(m["checks"][k] for k in keys):
+            return None
+        return self._row(m, "short", "signal", len(keys))
+
+    def evaluate_watch(self, direction: str, cfg: ScanConfig) -> dict[str, Any] | None:
+        m = self.metrics(cfg)
+        if not m:
+            return None
+        checks = m["checks"]
+        if direction == "long":
+            watch_keys = ["move15sLong", "move1mLong", "volumeSpike", "aboveVwap"]
+        else:
+            watch_keys = ["move15sShort", "move1mShort", "volumeSpike", "belowVwap"]
+        signal_keys = self._signal_keys(direction, cfg)
+        # Don't surface as "watch" if it already qualifies as a full signal.
+        if all(checks[k] for k in signal_keys):
+            return None
+        # Needs the fast move at minimum to be worth watching.
+        primary = "move15sLong" if direction == "long" else "move15sShort"
+        if not checks[primary]:
+            return None
+        score = self._score(checks, watch_keys)
+        if score < 1:
+            return None
+        row = self._row(m, direction, "watch", score)
+        row["checks"] = {k: checks[k] for k in watch_keys}
+        return row
 
 
 class LiveMomentumEngine:
@@ -300,22 +283,17 @@ class LiveMomentumEngine:
 
     def scan(
         self,
+        cfg: ScanConfig | None = None,
         *,
-        move_15s_pct: float = DEFAULT_MOVE_15S_PCT,
-        move_1m_pct: float = DEFAULT_MOVE_1M_PCT,
-        volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT,
         symbols: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        cfg = cfg or ScanConfig()
         allowed = {s.upper() for s in symbols} if symbols else None
         hits: list[dict[str, Any]] = []
         for sym, st in self._states.items():
             if allowed is not None and sym not in allowed:
                 continue
-            row = st.evaluate(
-                move_15s_pct=move_15s_pct,
-                move_1m_pct=move_1m_pct,
-                volume_mult=volume_mult,
-            )
+            row = st.evaluate(cfg)
             if row:
                 hits.append(row)
         hits.sort(key=lambda r: (r.get("move1mPct") or 0, r.get("volumeRatio") or 0), reverse=True)
@@ -323,35 +301,29 @@ class LiveMomentumEngine:
 
     def scan_intelligence(
         self,
+        cfg: ScanConfig | None = None,
         *,
-        move_15s_pct: float = DEFAULT_MOVE_15S_PCT,
-        move_1m_pct: float = DEFAULT_MOVE_1M_PCT,
-        volume_mult: float = DEFAULT_VOLUME_SPIKE_MULT,
         symbols: list[str] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        cfg = cfg or ScanConfig()
         allowed = {s.upper() for s in symbols} if symbols else None
         bullish: list[dict[str, Any]] = []
         bearish: list[dict[str, Any]] = []
         watch_long: list[dict[str, Any]] = []
         watch_short: list[dict[str, Any]] = []
-        kw = {
-            "move_15s_pct": move_15s_pct,
-            "move_1m_pct": move_1m_pct,
-            "volume_mult": volume_mult,
-        }
 
         for sym, st in self._states.items():
             if allowed is not None and sym not in allowed:
                 continue
-            long_sig = st.evaluate(**kw)
-            short_sig = st.evaluate_short(**kw)
+            long_sig = st.evaluate(cfg)
+            short_sig = st.evaluate_short(cfg)
             if long_sig:
                 bullish.append(long_sig)
-            elif wl := st.evaluate_watch("long", **kw):
+            elif wl := st.evaluate_watch("long", cfg):
                 watch_long.append(wl)
             if short_sig:
                 bearish.append(short_sig)
-            elif ws := st.evaluate_watch("short", **kw):
+            elif ws := st.evaluate_watch("short", cfg):
                 watch_short.append(ws)
 
         bullish.sort(key=lambda r: (r.get("move1mPct") or 0, r.get("volumeRatio") or 0), reverse=True)

@@ -14,6 +14,7 @@ from aiohttp import web
 from . import alert_pipeline, cache, feed, fno_intelligence, handlers, live_scanner_feed, upstox_sdk
 from .alert_pipeline import routes as alert_routes
 from . import index_move_push_monitor, push_routes
+from .live_scanner_feed import bootstrap_fno_scanner
 from .config import (
     CORS_HEADERS,
     NSE_CONNECT_TIMEOUT_SEC,
@@ -304,7 +305,7 @@ async def on_startup(app: web.Application) -> None:
 
         async def _start_scanner_after_bind() -> None:
             await asyncio.sleep(1.0)
-            live_scanner_feed.start_live_scanner(app["http_session"], token, "all")
+            await bootstrap_fno_scanner(app["http_session"], token)
 
         asyncio.create_task(_start_scanner_after_bind())
         asyncio.create_task(fno_intelligence.maybe_schedule_eod_playbook(app["http_session"], token))

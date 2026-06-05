@@ -21,6 +21,8 @@ export interface SmallcapConstituent {
   high: number;
   low: number;
   prevClose: number;
+  /** Session volume (shares) when available from quote feed. */
+  volume: number;
   indices: SmallcapIndexKey[];
 }
 
@@ -67,6 +69,7 @@ export function parseIndexConstituents(raw: unknown, indexKey: SmallcapIndexKey)
         high: Number(row.high ?? row.dayHigh ?? ltp),
         low: Number(row.low ?? row.dayLow ?? ltp),
         prevClose: Number(row.prevClose ?? row.previousClose ?? ltp),
+        volume: Number(row.volume ?? row.totalTradedVolume ?? 0),
         indices: indices.length ? indices : [indexKey],
       } satisfies SmallcapConstituent;
     })
@@ -80,6 +83,7 @@ export function parseSmallcapUniverseResponse(raw: unknown): SmallcapConstituent
     .map((row) => ({
       ...row,
       symbol: row.symbol.toUpperCase(),
+      volume: Number(row.volume ?? 0),
       indices: (row.indices ?? []).filter((k): k is SmallcapIndexKey => k in SMALLCAP_INDEX_NAMES),
     }))
     .filter((r) => r.ltp > 0);
@@ -99,6 +103,7 @@ export function mergeConstituentUniverse(
         existing.changePercent = row.changePercent;
         existing.high = Math.max(existing.high, row.high);
         existing.low = Math.min(existing.low, row.low);
+        if (row.volume > 0) existing.volume = row.volume;
       } else {
         bySymbol.set(row.symbol, { ...row, indices: [...row.indices] });
       }

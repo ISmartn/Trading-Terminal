@@ -13,6 +13,8 @@ import {
   buildSuddenMoveAlert,
   detectSuddenMove,
   DEFAULT_MOVE_THRESHOLDS,
+  passesVolumeGate,
+  resolveFnoVolumeContext,
   type PriceSample,
   type SuddenMoveAlert,
   type SuddenMoveThresholds,
@@ -98,7 +100,7 @@ export function useIndexSuddenMoveMonitor(
 
       notifyUserAlert({
         title: alert.headline,
-        body: `${alert.trade.primary} — ${alert.trade.rationale}`,
+        body: alert.notifyBody,
         tone: alert.expectedDirection === "up" ? "bullish" : "bearish",
         tag: alert.id,
         toast: notifyToast,
@@ -123,9 +125,11 @@ export function useIndexSuddenMoveMonitor(
       if (!move) continue;
 
       const stepSize = MOVE_ALERT_STRIKE_STEP[symbol];
+      const chainBundle = chains.find((c) => c.symbol === symbol);
+      const oiMetrics = chainBundle?.chainData?.oiMetrics ?? null;
+
       let insight = null;
       if (isFoMoveSymbol(symbol)) {
-        const chainBundle = chains.find((c) => c.symbol === symbol);
         const chain = chainBundle?.chainData?.chain ?? [];
         if (chain.length > 0 && ltp > 0) {
           insight = buildIndexOptionInsight({
@@ -134,12 +138,15 @@ export function useIndexSuddenMoveMonitor(
             spotPrice: ltp,
             stepSize: chainBundle?.chainData?.stepSize ?? stepSize,
             expiry: null,
-            oiMetrics: chainBundle?.chainData?.oiMetrics ?? null,
+            oiMetrics,
           });
         }
       }
 
-      const alert = buildSuddenMoveAlert(symbol, move, ltp, stepSize, insight, now);
+      const volCtx = resolveFnoVolumeContext(oiMetrics);
+      if (!passesVolumeGate(symbol, volCtx)) continue;
+
+      const alert = buildSuddenMoveAlert(symbol, move, ltp, stepSize, insight, now, volCtx);
       fireAlert(alert);
     }
   }, [enabled, spots, chains, thresholds, pushSample, fireAlert]);

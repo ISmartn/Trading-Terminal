@@ -153,10 +153,15 @@ async def _tick(session: aiohttp.ClientSession) -> None:
 
         label = LABELS.get(symbol, symbol)
         dir_word = "up" if move["direction"] == "up" else "down"
-        title = f"{label} sudden {dir_word} ({move['window']})"
+        move_pts = round(move["toPrice"] - move["fromPrice"], 2)
+        title = (
+            f"{label} sudden {dir_word} {move['movePct']:+.2f}% "
+            f"({move_pts:+.2f} pts) ({move['window']})"
+        )
         body = (
-            f"{move['movePct']:+.2f}% · {move['fromPrice']:.2f} → {move['toPrice']:.2f} · "
-            f"Open app for trade ideas"
+            f"{move['fromPrice']:.2f} → {move['toPrice']:.2f} "
+            f"({move['movePct']:+.2f}%, {move_pts:+.2f} pts) · "
+            f"Open app for F&O volume + trade ideas"
         )
         sent = web_push.broadcast_push(
             title=title,

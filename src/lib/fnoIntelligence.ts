@@ -11,6 +11,7 @@ export interface LiveSignalRow {
   volume1m?: number;
   avgVolume20m?: number;
   volumeRatio?: number | null;
+  volSpike?: boolean;
   vwap?: number | null;
   aboveVwap?: boolean;
   belowVwap?: boolean;
@@ -18,12 +19,40 @@ export interface LiveSignalRow {
   timestamp: number;
 }
 
+export interface ScanSettings {
+  fastSecs: number;
+  slowSecs: number;
+  moveFast: number;
+  moveSlow: number;
+  volumeMult: number;
+  requireVolume: boolean;
+  requireVwap: boolean;
+}
+
+export const DEFAULT_SCAN_SETTINGS: ScanSettings = {
+  fastSecs: 15,
+  slowSecs: 60,
+  moveFast: 0.3,
+  moveSlow: 0.6,
+  volumeMult: 2.0,
+  requireVolume: false,
+  requireVwap: true,
+};
+
 export interface LiveIntelligenceResult {
   mode: "live" | "afterHours";
   marketOpen: boolean;
   universe: string;
   universeSize: number;
-  thresholds: { move15sPct: number; move1mPct: number; volumeMult: number };
+  thresholds: {
+    fastSecs?: number;
+    slowSecs?: number;
+    move15sPct: number;
+    move1mPct: number;
+    volumeMult: number;
+    requireVolume?: boolean;
+    requireVwap?: boolean;
+  };
   bullish: LiveSignalRow[];
   bearish: LiveSignalRow[];
   watchLong: LiveSignalRow[];
@@ -68,8 +97,22 @@ export interface PlaybookResult {
   analyzed?: number;
 }
 
-export async function fetchLiveIntelligence(universe = "all"): Promise<LiveIntelligenceResult> {
-  const res = await fetch(`${PROXY_BASE}/api/fno-intelligence/live?universe=${universe}`, {
+export async function fetchLiveIntelligence(
+  universe = "all",
+  settings?: Partial<ScanSettings>,
+): Promise<LiveIntelligenceResult> {
+  const s = { ...DEFAULT_SCAN_SETTINGS, ...settings };
+  const params = new URLSearchParams({
+    universe,
+    fastSecs: String(s.fastSecs),
+    slowSecs: String(s.slowSecs),
+    moveFast: String(s.moveFast),
+    moveSlow: String(s.moveSlow),
+    volumeMult: String(s.volumeMult),
+    requireVolume: s.requireVolume ? "1" : "0",
+    requireVwap: s.requireVwap ? "1" : "0",
+  });
+  const res = await fetch(`${PROXY_BASE}/api/fno-intelligence/live?${params}`, {
     signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error(`Live intelligence failed (${res.status})`);

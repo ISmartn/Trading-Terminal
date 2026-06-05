@@ -66,7 +66,10 @@ function AlertCard({
               </span>
             </CardTitle>
             <CardDescription className="mt-0.5 text-xs">
-              {new Date(alert.triggeredAt).toLocaleTimeString("en-IN")} · ₹{fmt(alert.ltp)} · day{" "}
+              {new Date(alert.triggeredAt).toLocaleTimeString("en-IN")} · ₹{fmt(alert.ltp)} ·{" "}
+              {alert.movePoints >= 0 ? "+" : ""}
+              {fmt(alert.movePoints)} pts
+              {alert.volumeSummary ? ` · ${alert.volumeSummary}` : ""} · day{" "}
               {alert.dayChangePercent >= 0 ? "+" : ""}
               {fmt(alert.dayChangePercent)}%
             </CardDescription>

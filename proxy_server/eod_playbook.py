@@ -9,8 +9,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import cache, ta_indicators
-from .config import CACHE_DIR, FNO_STOCKS
-from .live_scanner import POPULAR_SCAN_SYMBOLS
+from .config import CACHE_DIR
+from .fno_scan_universe import get_fno_scan_stocks
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -198,7 +198,7 @@ async def generate_playbook(
     from .handlers import fetch_candles_for_ta
 
     if symbols is None:
-        symbols = list(FNO_STOCKS) if universe == "all" else list(POPULAR_SCAN_SYMBOLS)
+        symbols = get_fno_scan_stocks(universe)
 
     rows: list[dict[str, Any]] = []
     errors = 0

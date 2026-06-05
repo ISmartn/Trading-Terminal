@@ -11,31 +11,47 @@ from . import eod_playbook, live_scanner_feed
 from . import cache
 from .config import get_access_token
 from .eod_playbook import is_market_hours_ist, load_playbook, should_auto_generate_playbook
-from .live_scanner import DEFAULT_MOVE_15S_PCT, DEFAULT_MOVE_1M_PCT, DEFAULT_VOLUME_SPIKE_MULT, engine
+from .live_scanner import ScanConfig, engine
 from .live_scanner_feed import _symbols_for_universe, start_live_scanner
 
 _playbook_task: asyncio.Task | None = None
 
 
+def _bool_param(params: dict[str, str], key: str, default: bool) -> bool:
+    raw = params.get(key)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _scan_config_from_params(params: dict[str, str]) -> ScanConfig:
+    cfg = ScanConfig()
+    cfg.fast_secs = int(float(params.get("fastSecs") or cfg.fast_secs))
+    cfg.slow_secs = int(float(params.get("slowSecs") or cfg.slow_secs))
+    # Accept both new (moveFast/moveSlow) and legacy (move15s/move1m) names.
+    cfg.move_fast_pct = float(params.get("moveFast") or params.get("move15s") or cfg.move_fast_pct)
+    cfg.move_slow_pct = float(params.get("moveSlow") or params.get("move1m") or cfg.move_slow_pct)
+    cfg.volume_mult = float(params.get("volumeMult") or cfg.volume_mult)
+    cfg.require_volume = _bool_param(params, "requireVolume", cfg.require_volume)
+    cfg.require_vwap = _bool_param(params, "requireVwap", cfg.require_vwap)
+    return cfg
+
+
 def get_live_intelligence(params: dict[str, str]) -> dict[str, Any]:
     universe = params.get("universe") or "all"
-    move_15s = float(params.get("move15s") or DEFAULT_MOVE_15S_PCT)
-    move_1m = float(params.get("move1m") or DEFAULT_MOVE_1M_PCT)
-    vol_mult = float(params.get("volumeMult") or DEFAULT_VOLUME_SPIKE_MULT)
+    cfg = _scan_config_from_params(params)
 
-    cache_key = f"fno:live:{universe}:{move_15s}:{move_1m}:{vol_mult}"
+    cache_key = (
+        f"fno:live:{universe}:{cfg.fast_secs}:{cfg.slow_secs}:{cfg.move_fast_pct}:"
+        f"{cfg.move_slow_pct}:{cfg.volume_mult}:{cfg.require_volume}:{cfg.require_vwap}"
+    )
     cached = cache.get_cached(cache_key)
     if cached:
         return cached
 
     symbols = _symbols_for_universe(universe)
 
-    scans = engine.scan_intelligence(
-        move_15s_pct=move_15s,
-        move_1m_pct=move_1m,
-        volume_mult=vol_mult,
-        symbols=symbols,
-    )
+    scans = engine.scan_intelligence(cfg, symbols=symbols)
 
     import time
 
@@ -45,9 +61,15 @@ def get_live_intelligence(params: dict[str, str]) -> dict[str, Any]:
         "universe": universe,
         "universeSize": len(symbols),
         "thresholds": {
-            "move15sPct": move_15s,
-            "move1mPct": move_1m,
-            "volumeMult": vol_mult,
+            "fastSecs": cfg.fast_secs,
+            "slowSecs": cfg.slow_secs,
+            "move15sPct": cfg.move_fast_pct,
+            "move1mPct": cfg.move_slow_pct,
+            "moveFastPct": cfg.move_fast_pct,
+            "moveSlowPct": cfg.move_slow_pct,
+            "volumeMult": cfg.volume_mult,
+            "requireVolume": cfg.require_volume,
+            "requireVwap": cfg.require_vwap,
         },
         "bullish": scans["bullish"],
         "bearish": scans["bearish"],
@@ -73,7 +95,7 @@ async def get_playbook_handler(
 ) -> dict[str, Any]:
     session_date = params.get("date")
     generate = params.get("generate", "").lower() in ("1", "true", "yes")
-    universe = params.get("universe") or "popular"
+    universe = params.get("universe") or "all"
 
     if generate:
         if not token:
@@ -108,7 +130,7 @@ async def maybe_schedule_eod_playbook(session: aiohttp.ClientSession, token: str
 
     async def _run() -> None:
         try:
-            await eod_playbook.generate_playbook(session, token, universe="popular")
+            await eod_playbook.generate_playbook(session, token, universe="all")
         except Exception as exc:
             print(f"  ⚠️ Auto playbook generation failed: {exc}")
 

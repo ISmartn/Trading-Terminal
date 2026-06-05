@@ -195,7 +195,7 @@ async def _fetch_tradingview_quotes(
     if not symbols:
         return {}
 
-    columns = ["name", "close", "change", "open", "high", "low"]
+    columns = ["name", "close", "change", "open", "high", "low", "volume"]
     headers = {
         "Content-Type": "application/json",
         "User-Agent": NSE_HEADERS["User-Agent"],
@@ -229,6 +229,7 @@ async def _fetch_tradingview_quotes(
             high = float(d[4] or ltp) if len(d) > 4 else ltp
             low = float(d[5] or ltp) if len(d) > 5 else ltp
             prev = ltp / (1 + change_pct / 100) if change_pct else ltp
+            volume = float(d[6] or 0) if len(d) > 6 else 0.0
             out[sym] = {
                 "ltp": ltp,
                 "change": ltp - prev,
@@ -237,6 +238,7 @@ async def _fetch_tradingview_quotes(
                 "high": high,
                 "low": low,
                 "prevClose": prev,
+                "volume": volume,
             }
 
     return out
@@ -283,6 +285,7 @@ def _build_stocks(
                 "high": q.get("high", ltp),
                 "low": q.get("low", ltp),
                 "prevClose": prev,
+                "volume": q.get("volume", 0),
                 "indices": membership.get(sym, []),
             }
         )

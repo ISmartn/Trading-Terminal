@@ -4,6 +4,13 @@
 
 import type { IndexOptionInsight } from "./indexOptionInsights";
 import {
+  buildMoveHeadline,
+  buildMoveNotifyBody,
+  formatVolumeMultiple,
+  formatVolumeShort,
+} from "./alertMoveFormat";
+import type { OiSnapshotMetrics } from "./oiUtils";
+import {
   INDEX_MOVE_ALERT_LABELS,
   MOVE_ALERT_STRIKE_STEP,
   isIndexOnlyMoveSymbol,
@@ -47,11 +54,25 @@ const WINDOW_MS: Record<MoveWindow, number> = {
 export interface DetectedMove {
   window: MoveWindow;
   movePct: number;
+  /** Absolute index points moved over the window. */
+  movePoints: number;
   direction: MoveDirection;
   fromPrice: number;
   toPrice: number;
   lookbackMs: number;
 }
+
+/** F&O chain volume context (Nifty / Bank Nifty). */
+export interface FnoVolumeContext {
+  totalFnoVolume: number;
+  fnoVolMultiple: number | null;
+  pcrVolume: number;
+  volumeSummary: string;
+  volumeConfirmed: boolean;
+}
+
+/** Min F&O volume vs prior snapshot to fire alert when chain data exists. */
+export const MIN_FNO_VOLUME_MULTIPLE = 1.15;
 
 export interface TradeSuggestion {
   primary: string;
@@ -70,6 +91,10 @@ export interface SuddenMoveAlert {
   triggeredAt: number;
   spotAtAlert: number;
   move: DetectedMove;
+  movePoints: number;
+  volumeSummary: string | null;
+  volumeConfirmed: boolean;
+  notifyBody: string;
   oiBias: IndexOptionInsight["bias"] | null;
   oiAgrees: boolean;
   expectedDirection: MoveDirection;
@@ -114,6 +139,7 @@ export function detectSuddenMove(
     const candidate: DetectedMove = {
       window,
       movePct,
+      movePoints: Math.round((ltp - from) * 100) / 100,
       direction: movePct >= 0 ? "up" : "down",
       fromPrice: from,
       toPrice: ltp,
@@ -222,6 +248,33 @@ export function buildTradeSuggestion(
   };
 }
 
+export function resolveFnoVolumeContext(
+  oiMetrics: OiSnapshotMetrics | null | undefined,
+): FnoVolumeContext | null {
+  if (!oiMetrics || oiMetrics.totalFnoVolume <= 0) return null;
+  const mult = oiMetrics.fnoVolMultiple;
+  const multLabel = formatVolumeMultiple(mult);
+  const volPart = `F&O vol ${formatVolumeShort(oiMetrics.totalFnoVolume)}${multLabel ? ` (${multLabel})` : ""}`;
+  const pcrPart = `PCR-V ${oiMetrics.pcrVolume.toFixed(2)}`;
+  const volumeConfirmed = mult == null || mult >= MIN_FNO_VOLUME_MULTIPLE;
+  return {
+    totalFnoVolume: oiMetrics.totalFnoVolume,
+    fnoVolMultiple: mult,
+    pcrVolume: oiMetrics.pcrVolume,
+    volumeSummary: `${volPart} · ${pcrPart}`,
+    volumeConfirmed,
+  };
+}
+
+export function passesVolumeGate(
+  symbol: IndexMoveAlertSymbol,
+  volCtx: FnoVolumeContext | null,
+): boolean {
+  if (isIndexOnlyMoveSymbol(symbol)) return true;
+  if (!volCtx) return true;
+  return volCtx.volumeConfirmed;
+}
+
 export function buildSuddenMoveAlert(
   symbol: IndexMoveAlertSymbol,
   move: DetectedMove,
@@ -229,6 +282,7 @@ export function buildSuddenMoveAlert(
   stepSize: number,
   insight: IndexOptionInsight | null,
   now = Date.now(),
+  volCtx: FnoVolumeContext | null = null,
 ): SuddenMoveAlert {
   const indexOnly = isIndexOnlyMoveSymbol(symbol);
   const { agrees, bias } = indexOnly
@@ -237,11 +291,34 @@ export function buildSuddenMoveAlert(
   const confidence = confidenceFrom(move, agrees, insight);
   const trade = buildTradeSuggestion(symbol, move.direction, spot, stepSize, agrees, insight);
   const label = INDEX_MOVE_ALERT_LABELS[symbol];
-  const dirWord = move.direction === "up" ? "UP" : "DOWN";
-  const headline = `${label} sudden ${dirWord} ${move.movePct >= 0 ? "+" : ""}${move.movePct}% (${move.window})`;
+  const volumeSummary = volCtx?.volumeSummary ?? (indexOnly ? "Index spot (no F&O volume)" : null);
+  const volumeConfirmed = volCtx?.volumeConfirmed ?? !indexOnly;
+
+  const headline = buildMoveHeadline({
+    label: `${label} sudden`,
+    direction: move.direction,
+    movePct: move.movePct,
+    fromPrice: move.fromPrice,
+    toPrice: move.toPrice,
+    window: move.window,
+    volumeSummary,
+  });
+
+  const notifyBody = buildMoveNotifyBody({
+    label,
+    direction: move.direction,
+    movePct: move.movePct,
+    fromPrice: move.fromPrice,
+    toPrice: move.toPrice,
+    volumeSummary,
+    extra: trade.primary,
+  });
 
   const bullets: string[] = [
-    `Move: ${move.fromPrice.toLocaleString("en-IN")} → ${move.toPrice.toLocaleString("en-IN")} in ${move.window}`,
+    `Move: ${move.fromPrice.toLocaleString("en-IN")} → ${move.toPrice.toLocaleString("en-IN")} (${move.movePoints >= 0 ? "+" : ""}${move.movePoints.toFixed(2)} pts) in ${move.window}`,
+    volumeSummary
+      ? `Volume: ${volumeSummary}${volumeConfirmed ? " — confirms price spike" : " — weak vs prior; lower conviction"}`
+      : "Volume: not available for this symbol",
     indexOnly
       ? "Index-only benchmark — no NSE F&O chain; spot move drives the alert."
       : insight
@@ -263,6 +340,10 @@ export function buildSuddenMoveAlert(
     triggeredAt: now,
     spotAtAlert: spot,
     move,
+    movePoints: move.movePoints,
+    volumeSummary,
+    volumeConfirmed,
+    notifyBody,
     oiBias: bias,
     oiAgrees: agrees,
     expectedDirection: move.direction,
