@@ -8,7 +8,6 @@ from typing import Any
 import aiohttp
 
 from . import eod_playbook, live_scanner_feed
-from . import cache
 from .config import get_access_token
 from .eod_playbook import is_market_hours_ist, load_playbook, should_auto_generate_playbook
 from .live_scanner import ScanConfig, engine
@@ -34,20 +33,13 @@ def _scan_config_from_params(params: dict[str, str]) -> ScanConfig:
     cfg.volume_mult = float(params.get("volumeMult") or cfg.volume_mult)
     cfg.require_volume = _bool_param(params, "requireVolume", cfg.require_volume)
     cfg.require_vwap = _bool_param(params, "requireVwap", cfg.require_vwap)
+    cfg.watch_sticky_secs = int(float(params.get("watchStickySecs") or cfg.watch_sticky_secs))
     return cfg
 
 
 def get_live_intelligence(params: dict[str, str]) -> dict[str, Any]:
     universe = params.get("universe") or "all"
     cfg = _scan_config_from_params(params)
-
-    cache_key = (
-        f"fno:live:{universe}:{cfg.fast_secs}:{cfg.slow_secs}:{cfg.move_fast_pct}:"
-        f"{cfg.move_slow_pct}:{cfg.volume_mult}:{cfg.require_volume}:{cfg.require_vwap}"
-    )
-    cached = cache.get_cached(cache_key)
-    if cached:
-        return cached
 
     symbols = _symbols_for_universe(universe)
 
@@ -70,21 +62,25 @@ def get_live_intelligence(params: dict[str, str]) -> dict[str, Any]:
             "volumeMult": cfg.volume_mult,
             "requireVolume": cfg.require_volume,
             "requireVwap": cfg.require_vwap,
+            "watchStickySecs": cfg.watch_sticky_secs,
         },
         "bullish": scans["bullish"],
         "bearish": scans["bearish"],
         "watchLong": scans["watchLong"],
         "watchShort": scans["watchShort"],
+        "watchHistoryLong": scans["watchHistoryLong"],
+        "watchHistoryShort": scans["watchHistoryShort"],
         "counts": {
             "bullish": len(scans["bullish"]),
             "bearish": len(scans["bearish"]),
             "watchLong": len(scans["watchLong"]),
             "watchShort": len(scans["watchShort"]),
+            "watchHistoryLong": len(scans["watchHistoryLong"]),
+            "watchHistoryShort": len(scans["watchHistoryShort"]),
         },
         "status": engine.status(),
         "timestamp": int(time.time() * 1000),
     }
-    cache.set_cache(cache_key, result, 2000)
     return result
 
 

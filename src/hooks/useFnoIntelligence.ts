@@ -20,6 +20,7 @@ export function useFnoLiveIntelligence(
     staleTime: 1000,
     gcTime: 5 * 60 * 1000,
     refetchOnWindowFocus: true,
+    placeholderData: (prev) => prev,
   });
 }
 

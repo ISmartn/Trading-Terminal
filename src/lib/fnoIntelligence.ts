@@ -3,7 +3,7 @@ import { PROXY_BASE } from "@/lib/proxyConfig";
 export interface LiveSignalRow {
   symbol: string;
   direction: "long" | "short";
-  strength: "signal" | "watch";
+  strength: "signal" | "watch" | "history";
   score: number;
   ltp: number;
   move15sPct?: number | null;
@@ -16,6 +16,16 @@ export interface LiveSignalRow {
   aboveVwap?: boolean;
   belowVwap?: boolean;
   checks?: Record<string, boolean>;
+  watchAgeSecs?: number;
+  peakScore?: number;
+  sticky?: boolean;
+  firstSeenMs?: number;
+  lastSeenMs?: number;
+  durationSecs?: number;
+  peakMoveFastPct?: number | null;
+  peakMoveSlowPct?: number | null;
+  endReason?: "expired" | "reversed" | "promoted";
+  promoted?: boolean;
   timestamp: number;
 }
 
@@ -57,7 +67,16 @@ export interface LiveIntelligenceResult {
   bearish: LiveSignalRow[];
   watchLong: LiveSignalRow[];
   watchShort: LiveSignalRow[];
-  counts: { bullish: number; bearish: number; watchLong: number; watchShort: number };
+  watchHistoryLong?: LiveSignalRow[];
+  watchHistoryShort?: LiveSignalRow[];
+  counts: {
+    bullish: number;
+    bearish: number;
+    watchLong: number;
+    watchShort: number;
+    watchHistoryLong?: number;
+    watchHistoryShort?: number;
+  };
   status: { running: boolean; symbolsTracked: number; pollCount: number };
   timestamp: number;
 }

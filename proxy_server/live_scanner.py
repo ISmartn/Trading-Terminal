@@ -19,6 +19,7 @@ DEFAULT_VOLUME_SPIKE_MULT = 2.0
 DEFAULT_VOLUME_AVG_BARS = 20
 DEFAULT_REQUIRE_VOLUME = False
 DEFAULT_REQUIRE_VWAP = True
+DEFAULT_WATCH_STICKY_SECS = 120
 
 # Backwards-compatible aliases (older callers / params)
 DEFAULT_MOVE_15S_PCT = DEFAULT_MOVE_FAST_PCT
@@ -37,6 +38,40 @@ class ScanConfig:
     require_volume: bool = DEFAULT_REQUIRE_VOLUME
     require_vwap: bool = DEFAULT_REQUIRE_VWAP
     min_avg_bars: int = 5
+    watch_sticky_secs: int = DEFAULT_WATCH_STICKY_SECS
+
+
+@dataclass
+class _WatchEntry:
+    symbol: str
+    direction: str
+    row: dict[str, Any]
+    first_seen_ms: int
+    last_seen_ms: int
+    peak_score: int = 0
+    peak_move_fast: float | None = None
+    peak_move_slow: float | None = None
+    promoted_signal: bool = False
+
+    def touch_row(self, row: dict[str, Any], now_ms: int) -> None:
+        self.last_seen_ms = now_ms
+        self.row = row
+        score = int(row.get("score") or 1)
+        self.peak_score = max(self.peak_score, score)
+        if row.get("strength") == "signal":
+            self.promoted_signal = True
+        fast = row.get("move15sPct")
+        slow = row.get("move1mPct")
+        if fast is not None:
+            if self.direction == "long":
+                self.peak_move_fast = fast if self.peak_move_fast is None else max(self.peak_move_fast, fast)
+            else:
+                self.peak_move_fast = fast if self.peak_move_fast is None else min(self.peak_move_fast, fast)
+        if slow is not None:
+            if self.direction == "long":
+                self.peak_move_slow = slow if self.peak_move_slow is None else max(self.peak_move_slow, slow)
+            else:
+                self.peak_move_slow = slow if self.peak_move_slow is None else min(self.peak_move_slow, slow)
 
 POPULAR_SCAN_SYMBOLS = [
     "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "SBIN", "BHARTIARTL", "ITC",
@@ -235,6 +270,22 @@ class SymbolLiveState:
             return None
         return self._row(m, "short", "signal", len(keys))
 
+    def _partial_momentum(self, m: dict[str, Any], direction: str, cfg: ScanConfig) -> bool:
+        """Half-threshold move on fast OR slow window — catches building momentum."""
+        fast = m.get("move15sPct")
+        slow = m.get("move1mPct")
+        half_fast = cfg.move_fast_pct / 2
+        half_slow = cfg.move_slow_pct / 2
+        if direction == "long":
+            return (
+                (fast is not None and fast >= half_fast)
+                or (slow is not None and slow >= half_slow)
+            )
+        return (
+            (fast is not None and fast <= -half_fast)
+            or (slow is not None and slow <= -half_slow)
+        )
+
     def evaluate_watch(self, direction: str, cfg: ScanConfig) -> dict[str, Any] | None:
         m = self.metrics(cfg)
         if not m:
@@ -248,25 +299,199 @@ class SymbolLiveState:
         # Don't surface as "watch" if it already qualifies as a full signal.
         if all(checks[k] for k in signal_keys):
             return None
-        # Needs the fast move at minimum to be worth watching.
-        primary = "move15sLong" if direction == "long" else "move15sShort"
-        if not checks[primary]:
-            return None
         score = self._score(checks, watch_keys)
-        if score < 1:
+        if score < 1 and not self._partial_momentum(m, direction, cfg):
             return None
-        row = self._row(m, direction, "watch", score)
+        row = self._row(m, direction, "watch", max(score, 1))
         row["checks"] = {k: checks[k] for k in watch_keys}
         return row
 
 
 class LiveMomentumEngine:
+    MAX_WATCH_HISTORY = 150
+
     def __init__(self) -> None:
         self._states: dict[str, SymbolLiveState] = {}
+        self._watch_registry: dict[str, _WatchEntry] = {}
+        self._watch_history: list[dict[str, Any]] = []
+        self._session_day: str | None = None
         self._running = False
         self._last_poll_ms = 0
         self._poll_count = 0
         self._symbols_polled = 0
+
+    def _watch_key(self, symbol: str, direction: str) -> str:
+        return f"{symbol.upper()}:{direction}"
+
+    def _maybe_reset_session(self, now_ms: int) -> None:
+        day = _ist_day_key(now_ms)
+        if self._session_day != day:
+            self._session_day = day
+            self._watch_registry.clear()
+            self._watch_history.clear()
+
+    def _register_watch(self, row: dict[str, Any], now_ms: int) -> None:
+        sym = row["symbol"]
+        direction = row["direction"]
+        key = self._watch_key(sym, direction)
+        score = int(row.get("score") or 1)
+        existing = self._watch_registry.get(key)
+        if existing:
+            existing.touch_row(row, now_ms)
+        else:
+            ent = _WatchEntry(
+                symbol=sym,
+                direction=direction,
+                row=row,
+                first_seen_ms=now_ms,
+                last_seen_ms=now_ms,
+                peak_score=score,
+            )
+            ent.touch_row(row, now_ms)
+            self._watch_registry[key] = ent
+
+    def _history_row(self, ent: _WatchEntry, reason: str) -> dict[str, Any]:
+        duration = max(0, int((ent.last_seen_ms - ent.first_seen_ms) / 1000))
+        return {
+            "symbol": ent.symbol,
+            "direction": ent.direction,
+            "strength": "history",
+            "score": ent.peak_score,
+            "peakScore": ent.peak_score,
+            "ltp": ent.row.get("ltp"),
+            "move15sPct": ent.peak_move_fast,
+            "move1mPct": ent.peak_move_slow,
+            "peakMoveFastPct": ent.peak_move_fast,
+            "peakMoveSlowPct": ent.peak_move_slow,
+            "volumeRatio": ent.row.get("volumeRatio"),
+            "vwap": ent.row.get("vwap"),
+            "firstSeenMs": ent.first_seen_ms,
+            "lastSeenMs": ent.last_seen_ms,
+            "durationSecs": duration,
+            "endReason": reason,
+            "promoted": ent.promoted_signal,
+            "timestamp": ent.last_seen_ms,
+        }
+
+    def _archive_watch(self, key: str, ent: _WatchEntry, reason: str) -> None:
+        self._watch_history.append(self._history_row(ent, reason))
+        if len(self._watch_history) > self.MAX_WATCH_HISTORY:
+            self._watch_history = self._watch_history[-self.MAX_WATCH_HISTORY :]
+        del self._watch_registry[key]
+
+    def _watch_reversed(self, st: SymbolLiveState, direction: str, cfg: ScanConfig) -> bool:
+        """Drop sticky watch when price clearly flips the other way."""
+        m = st.metrics(cfg)
+        if not m:
+            return True
+        fast = m.get("move15sPct")
+        if fast is None:
+            return False
+        flip = cfg.move_fast_pct * 0.5
+        if direction == "long":
+            return fast < -flip
+        return fast > flip
+
+    def _expire_inactive_watches(
+        self,
+        cfg: ScanConfig,
+        *,
+        bullish_syms: set[str],
+        bearish_syms: set[str],
+        active_long: set[str],
+        active_short: set[str],
+        now_ms: int,
+    ) -> None:
+        sticky_ms = cfg.watch_sticky_secs * 1000
+        for key, ent in list(self._watch_registry.items()):
+            if ent.direction == "long" and ent.symbol in bullish_syms:
+                continue
+            if ent.direction == "short" and ent.symbol in bearish_syms:
+                continue
+            if ent.direction == "long" and ent.symbol in active_long:
+                continue
+            if ent.direction == "short" and ent.symbol in active_short:
+                continue
+
+            st = self.get_state(ent.symbol)
+            expired = now_ms - ent.last_seen_ms > sticky_ms
+            reversed_move = bool(st and self._watch_reversed(st, ent.direction, cfg))
+            if not expired and not reversed_move:
+                continue
+
+            if ent.promoted_signal:
+                reason = "promoted"
+            elif reversed_move:
+                reason = "reversed"
+            else:
+                reason = "expired"
+            self._archive_watch(key, ent, reason)
+
+    def _collect_watch_history(self, direction: str) -> list[dict[str, Any]]:
+        rows = [r for r in self._watch_history if r.get("direction") == direction]
+        rows.sort(key=lambda r: r.get("lastSeenMs") or 0, reverse=True)
+        return rows
+
+    def _collect_sticky_watch(
+        self,
+        direction: str,
+        cfg: ScanConfig,
+        *,
+        allowed: set[str] | None,
+        exclude: set[str],
+        now_ms: int,
+    ) -> list[dict[str, Any]]:
+        sticky_ms = cfg.watch_sticky_secs * 1000
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for ent in self._watch_registry.values():
+            if ent.direction != direction:
+                continue
+            if ent.symbol in exclude or ent.symbol in seen:
+                continue
+            if allowed is not None and ent.symbol not in allowed:
+                continue
+            if now_ms - ent.last_seen_ms > sticky_ms:
+                continue
+
+            st = self.get_state(ent.symbol)
+            if not st or self._watch_reversed(st, direction, cfg):
+                continue
+
+            # Refresh displayed metrics from live state when available.
+            fresh = st.evaluate_watch(direction, cfg) if st else None
+            if fresh:
+                row = fresh
+                row["watchAgeSecs"] = int((now_ms - ent.first_seen_ms) / 1000)
+                row["peakScore"] = ent.peak_score
+            else:
+                row = {**ent.row, "strength": "watch"}
+                row["watchAgeSecs"] = int((now_ms - ent.first_seen_ms) / 1000)
+                row["peakScore"] = ent.peak_score
+                if st:
+                    live_m = st.metrics(cfg)
+                    if live_m:
+                        row["ltp"] = live_m["ltp"]
+                        row["move15sPct"] = live_m["move15sPct"]
+                        row["move1mPct"] = live_m["move1mPct"]
+                        row["volumeRatio"] = live_m["volumeRatio"]
+                        row["vwap"] = live_m["vwap"]
+
+            row["sticky"] = now_ms - ent.last_seen_ms > 2500
+            rows.append(row)
+            seen.add(ent.symbol)
+
+        rows.sort(
+            key=lambda r: (
+                0 if not r.get("sticky") else 1,
+                r.get("peakScore", 0),
+                abs(r.get("move1mPct") or 0),
+                abs(r.get("move15sPct") or 0),
+            ),
+            reverse=True,
+        )
+        return rows
 
     def register(self, symbol: str, instrument_key: str) -> SymbolLiveState:
         sym = symbol.upper()
@@ -305,12 +530,14 @@ class LiveMomentumEngine:
         *,
         symbols: list[str] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
+        import time
+
         cfg = cfg or ScanConfig()
         allowed = {s.upper() for s in symbols} if symbols else None
         bullish: list[dict[str, Any]] = []
         bearish: list[dict[str, Any]] = []
-        watch_long: list[dict[str, Any]] = []
-        watch_short: list[dict[str, Any]] = []
+        now_ms = int(time.time() * 1000)
+        self._maybe_reset_session(now_ms)
 
         for sym, st in self._states.items():
             if allowed is not None and sym not in allowed:
@@ -319,23 +546,44 @@ class LiveMomentumEngine:
             short_sig = st.evaluate_short(cfg)
             if long_sig:
                 bullish.append(long_sig)
+                self._register_watch(long_sig, now_ms)
             elif wl := st.evaluate_watch("long", cfg):
-                watch_long.append(wl)
+                self._register_watch(wl, now_ms)
             if short_sig:
                 bearish.append(short_sig)
+                self._register_watch(short_sig, now_ms)
             elif ws := st.evaluate_watch("short", cfg):
-                watch_short.append(ws)
+                self._register_watch(ws, now_ms)
+
+        bullish_syms = {r["symbol"] for r in bullish}
+        bearish_syms = {r["symbol"] for r in bearish}
+        watch_long = self._collect_sticky_watch(
+            "long", cfg, allowed=allowed, exclude=bullish_syms, now_ms=now_ms,
+        )
+        watch_short = self._collect_sticky_watch(
+            "short", cfg, allowed=allowed, exclude=bearish_syms, now_ms=now_ms,
+        )
+        self._expire_inactive_watches(
+            cfg,
+            bullish_syms=bullish_syms,
+            bearish_syms=bearish_syms,
+            active_long={r["symbol"] for r in watch_long},
+            active_short={r["symbol"] for r in watch_short},
+            now_ms=now_ms,
+        )
+        watch_history_long = self._collect_watch_history("long")
+        watch_history_short = self._collect_watch_history("short")
 
         bullish.sort(key=lambda r: (r.get("move1mPct") or 0, r.get("volumeRatio") or 0), reverse=True)
         bearish.sort(key=lambda r: (r.get("move1mPct") or 0, r.get("volumeRatio") or 0))
-        watch_long.sort(key=lambda r: r.get("score", 0), reverse=True)
-        watch_short.sort(key=lambda r: r.get("score", 0), reverse=True)
 
         return {
             "bullish": bullish,
             "bearish": bearish,
             "watchLong": watch_long,
             "watchShort": watch_short,
+            "watchHistoryLong": watch_history_long,
+            "watchHistoryShort": watch_history_short,
         }
 
     def snapshot(

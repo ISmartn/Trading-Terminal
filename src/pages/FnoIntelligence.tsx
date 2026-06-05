@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Loader2, RefreshCw, Radio, TrendingUp, TrendingDown, Eye, Sun, Zap, SlidersHorizontal, Bell, BellOff } from "lucide-react";
+import { Loader2, RefreshCw, Radio, TrendingUp, TrendingDown, Eye, Sun, Zap, SlidersHorizontal, Bell, BellOff, History } from "lucide-react";
 import { SectionHeader } from "@/components/dashboard/SectionHeader";
 import { useFnoLiveIntelligence, useFnoPlaybook } from "@/hooks/useFnoIntelligence";
 import { DEFAULT_SCAN_SETTINGS, type LiveSignalRow, type PlaybookRow, type ScanSettings } from "@/lib/fnoIntelligence";
@@ -52,6 +52,18 @@ function fmtWindow(secs: number): string {
   return Number.isInteger(m) ? `${m}m` : `${(secs / 60).toFixed(1)}m`;
 }
 
+function fmtTime(ms?: number) {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function endReasonLabel(reason?: LiveSignalRow["endReason"]) {
+  if (reason === "promoted") return "→ Signal";
+  if (reason === "reversed") return "Reversed";
+  if (reason === "expired") return "Faded";
+  return "—";
+}
+
 function fmt(n: number | null | undefined, d = 2) {
   if (n == null || Number.isNaN(n)) return "—";
   return n.toLocaleString("en-IN", { maximumFractionDigits: d, minimumFractionDigits: d });
@@ -92,11 +104,20 @@ function LiveTable({
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={`${row.symbol}-${row.strength}`} className="cursor-pointer hover:bg-muted/50" onClick={() => onRowClick(row.symbol)}>
+          <TableRow
+            key={`${row.symbol}-${row.strength}-${row.lastSeenMs ?? row.timestamp}`}
+            className={cn(
+              "cursor-pointer hover:bg-muted/50",
+              row.strength === "watch" && row.sticky && "opacity-80",
+            )}
+            onClick={() => onRowClick(row.symbol)}
+          >
             <TableCell className="font-medium text-xs">{row.symbol}</TableCell>
             <TableCell>
               <Badge variant={row.strength === "signal" ? "default" : "secondary"} className="text-2xs">
-                {row.strength === "signal" ? "SIGNAL" : `WATCH ${row.score}`}
+                {row.strength === "signal"
+                  ? "SIGNAL"
+                  : `WATCH ${row.peakScore ?? row.score}${row.watchAgeSecs != null ? ` · ${row.watchAgeSecs}s` : ""}`}
               </Badge>
             </TableCell>
             <TableCell className="text-right font-mono text-xs">{fmt(row.ltp)}</TableCell>
@@ -110,6 +131,77 @@ function LiveTable({
               {row.volumeRatio != null ? `${fmt(row.volumeRatio, 1)}×` : "—"}
             </TableCell>
             <TableCell className="text-right font-mono text-xs text-amber-700">{fmt(row.vwap, 0)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function WatchHistoryTable({
+  rows,
+  direction,
+  onRowClick,
+  fastLabel,
+  slowLabel,
+}: {
+  rows: LiveSignalRow[];
+  direction: "long" | "short";
+  onRowClick: (s: string) => void;
+  fastLabel: string;
+  slowLabel: string;
+}) {
+  if (!rows.length) {
+    return (
+      <p className="text-sm text-muted-foreground py-4 text-center">
+        No {direction === "long" ? "long" : "short"} watch history yet this session.
+      </p>
+    );
+  }
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="text-2xs">Symbol</TableHead>
+          <TableHead className="text-2xs text-right">Peak {fastLabel}</TableHead>
+          <TableHead className="text-2xs text-right">Peak {slowLabel}</TableHead>
+          <TableHead className="text-2xs text-right">Score</TableHead>
+          <TableHead className="text-2xs text-right">Held</TableHead>
+          <TableHead className="text-2xs">Ended</TableHead>
+          <TableHead className="text-2xs text-right">Time</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <TableRow
+            key={`${row.symbol}-${row.lastSeenMs ?? row.timestamp}`}
+            className="cursor-pointer hover:bg-muted/50 opacity-90"
+            onClick={() => onRowClick(row.symbol)}
+          >
+            <TableCell className="font-medium text-xs">{row.symbol}</TableCell>
+            <TableCell className={cn("text-right font-mono text-xs", direction === "long" ? "text-bullish" : "text-bearish")}>
+              {row.peakMoveFastPct != null ? `${row.peakMoveFastPct > 0 ? "+" : ""}${fmt(row.peakMoveFastPct)}%` : "—"}
+            </TableCell>
+            <TableCell className={cn("text-right font-mono text-xs", direction === "long" ? "text-bullish" : "text-bearish")}>
+              {row.peakMoveSlowPct != null ? `${row.peakMoveSlowPct > 0 ? "+" : ""}${fmt(row.peakMoveSlowPct)}%` : "—"}
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs">{row.peakScore ?? row.score}</TableCell>
+            <TableCell className="text-right font-mono text-xs text-muted-foreground">
+              {row.durationSecs != null ? fmtWindow(row.durationSecs) : "—"}
+            </TableCell>
+            <TableCell>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "text-2xs",
+                  row.endReason === "promoted" && "text-bullish border-bullish/40",
+                  row.endReason === "reversed" && "text-bearish border-bearish/40",
+                )}
+              >
+                {endReasonLabel(row.endReason)}
+              </Badge>
+            </TableCell>
+            <TableCell className="text-right font-mono text-2xs text-muted-foreground">{fmtTime(row.lastSeenMs)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -470,7 +562,7 @@ export default function FnoIntelligence() {
                       Watch — building momentum (long)
                       <Badge variant="outline" className="text-2xs">{live?.counts.watchLong ?? 0}</Badge>
                     </CardTitle>
-                    <CardDescription className="text-2xs">Partial criteria met — potential upside</CardDescription>
+                    <CardDescription className="text-2xs">Active movers — archived to session history when they fade</CardDescription>
                   </CardHeader>
                   <CardContent className="p-0 px-2 pb-2">
                     <LiveTable rows={live?.watchLong ?? []} direction="long" onRowClick={goSymbol} fastLabel={fastLabel} slowLabel={slowLabel} />
@@ -483,13 +575,55 @@ export default function FnoIntelligence() {
                       Watch — building momentum (short)
                       <Badge variant="outline" className="text-2xs">{live?.counts.watchShort ?? 0}</Badge>
                     </CardTitle>
-                    <CardDescription className="text-2xs">Partial criteria met — potential downside</CardDescription>
+                    <CardDescription className="text-2xs">Active movers — archived to session history when they fade</CardDescription>
                   </CardHeader>
                   <CardContent className="p-0 px-2 pb-2">
                     <LiveTable rows={live?.watchShort ?? []} direction="short" onRowClick={goSymbol} fastLabel={fastLabel} slowLabel={slowLabel} />
                   </CardContent>
                 </Card>
               </div>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <History className="h-4 w-4" />
+                    Watch session history
+                    <Badge variant="secondary" className="text-2xs">
+                      {(live?.counts.watchHistoryLong ?? 0) + (live?.counts.watchHistoryShort ?? 0)}
+                    </Badge>
+                  </CardTitle>
+                  <CardDescription className="text-2xs">
+                    Every stock that hit Watch today is kept here — peak moves, duration, and how it ended
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-0 px-2 pb-2">
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <div>
+                      <p className="text-2xs font-medium text-bullish px-2 py-1.5">
+                        Long history ({live?.counts.watchHistoryLong ?? 0})
+                      </p>
+                      <WatchHistoryTable
+                        rows={live?.watchHistoryLong ?? []}
+                        direction="long"
+                        onRowClick={goSymbol}
+                        fastLabel={fastLabel}
+                        slowLabel={slowLabel}
+                      />
+                    </div>
+                    <div>
+                      <p className="text-2xs font-medium text-bearish px-2 py-1.5">
+                        Short history ({live?.counts.watchHistoryShort ?? 0})
+                      </p>
+                      <WatchHistoryTable
+                        rows={live?.watchHistoryShort ?? []}
+                        direction="short"
+                        onRowClick={goSymbol}
+                        fastLabel={fastLabel}
+                        slowLabel={slowLabel}
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
             </>
           )}
         </TabsContent>
